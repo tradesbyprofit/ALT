@@ -1,0 +1,27 @@
+name: ALT Method Closer — Every 5m during games
+
+on:
+  schedule:
+    # Every 5 min during 20:00-04:00 UTC window = 3PM-11PM CT (covers MLB evening)
+    - cron: '*/5 20-23 * * *'
+    - cron: '*/5 0-4 * * *'
+  workflow_dispatch:
+
+jobs:
+  closer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - name: T-5 close pull (if any game in window)
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          echo "Closer check Dallas: $(TZ='America/Chicago' date)"
+          python alt_main.py close || true
+          python alt_main.py status || true

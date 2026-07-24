@@ -1,0 +1,27 @@
+# alt-watchdog.service — monitors ALT Method runner and pings if down or heartbeat 0
+# Dallas CT
+# Sends Telegram if:
+#   - runner DOWN but games still open
+#   - heartbeat stale >10 min
+#   - heartbeat hits 0 (all closed) → completion ping
+
+[Unit]
+Description=ALT Method Watchdog — pings if runner dies or heartbeat 0
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# ---- EDIT THESE ----
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/alt-line-clv
+ExecStart=/usr/bin/python3 /home/YOUR_USER/alt-line-clv/alt_watchdog.py --loop 60
+# --------------------
+Restart=always
+RestartSec=20
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

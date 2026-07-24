@@ -1,0 +1,81 @@
+name: ALT Method Daily — Dallas CT 7PM Auto
+
+on:
+  schedule:
+    # 00:00 UTC = 7PM CDT (UTC-5) in summer
+    - cron: '0 0 * * *'
+    # 01:00 UTC = 7PM CST (UTC-6) in winter / 8PM CDT
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      slate_date:
+        description: 'Slate date YYYY-MM-DD (default today CT)'
+        required: false
+        default: ''
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6h GitHub max — covers 3PM-9PM CT slate (~6h)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          pip install requests
+          echo "Python ready"
+
+      - name: Set Dallas time env
+        run: |
+          echo "Dallas: $(TZ='America/Chicago' date)"
+          echo "UTC: $(date -u)"
+          echo "Slate: ${{ inputs.slate_date }}"
+
+      - name: Verify setup
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          python verify_setup.py || true
+          python alt_main.py config || true
+
+      - name: Run ALT Method Daily (open + T-5 runner + watchdog pings)
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          PYTHONUNBUFFERED: 1
+        run: |
+          echo "Starting daily orchestrator — will run until all games closed (heartbeat 0)"
+          echo "Telegram labeled ALT Method, sharpest-only"
+          python alt_daily.py ${{ inputs.slate_date }}
+
+      - name: Upload DB and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alt-daily-${{ github.run_number }}-${{ github.run_id }}
+          path: |
+            data/
+            *.log
+            first_batch*.md
+            mlb_frozen*.md
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Report grading (if games finished)
+        if: always()
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          SLATE=$(TZ='America/Chicago' date +%Y-%m-%d)
+          if [ -n "${{ inputs.slate_date }}" ]; then SLATE="${{ inputs.slate_date }}"; fi
+          echo "Grading slate $SLATE"
+          python alt_main.py report $SLATE || true
+          python alt_main.py compare $SLATE || true

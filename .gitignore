@@ -1,0 +1,30 @@
+# SECRETS — never commit
+telegram_creds.json
+data/
+*.db
+*.log
+*.pid
+.watchdog_state.json
+.env
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local runner
+runner.log
+watchdog.log
+open.log
+
+# CSV dumps (large)
+*.csv
+!example*.csv

@@ -1,0 +1,14 @@
+# alt-watchdog.timer — optional cron-like check every 2 min if you don't want always-on loop
+# Use EITHER the service loop OR this timer with --once
+# If using --loop service, you don't need this timer.
+
+[Unit]
+Description=ALT Method Watchdog check every 2 min
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=alt-watchdog.service
+
+[Install]
+WantedBy=timers.target

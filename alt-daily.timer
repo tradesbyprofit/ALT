@@ -1,0 +1,30 @@
+# alt-daily.timer — Triggers ALT Method daily at 7 PM Dallas time
+#
+# Dallas lives in America/Chicago.
+# Systemd timers use the system's local timezone.
+# => SET YOUR SERVER TIMEZONE to America/Chicago:
+#    sudo timedatectl set-timezone America/Chicago
+#
+# Then this will fire at 7 PM CT every day, year-round (handles DST automatically).
+#
+# Install:
+#   sudo cp alt-daily.timer alt-daily.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now alt-daily.timer
+# Check:
+#   systemctl list-timers alt-daily.timer
+#   journalctl -u alt-daily.service -f
+
+[Unit]
+Description=Run ALT Method daily at 7 PM CT (Dallas)
+
+[Timer]
+# 7 PM local time (requires system tz = America/Chicago)
+OnCalendar=19:00
+Persistent=true
+# Random small delay to avoid thundering herd on exact minute:
+RandomizedDelaySec=30
+Unit=alt-daily.service
+
+[Install]
+WantedBy=timers.target

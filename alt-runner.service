@@ -1,0 +1,30 @@
+# systemd unit for ALT Method T-5 runner (Pinnacle -> Telegram)
+# Install on YOUR machine (Dallas CT timezone assumed):
+#
+#   1. Edit User= and WorkingDirectory= and ExecStart= below to match YOUR paths
+#   2. sudo cp alt-runner.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now alt-runner.service   # for one-off manual run
+#
+# For daily automation, install alt-daily.service + alt-daily.timer instead.
+
+[Unit]
+Description=ALT Method T-5 closing-line runner (Pinnacle -> Telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# ---- EDIT THESE to match your machine ----
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/alt-line-clv
+ExecStart=/usr/bin/python3 /home/YOUR_USER/alt-line-clv/alt_runner.py
+# ------------------------------------------
+Restart=on-failure
+RestartSec=15
+StandardOutput=append:/home/YOUR_USER/alt-line-clv/runner.log
+StandardError=append:/home/YOUR_USER/alt-line-clv/runner.log
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

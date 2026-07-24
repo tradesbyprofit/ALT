@@ -1,0 +1,21 @@
+# alt-open.service — Just the 7 PM opening freeze for ALT Method
+# Use this if you want open and runner as separate units.
+
+[Unit]
+Description=ALT Method opening pull (freeze all Pinnacle alternates)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# ---- EDIT THESE ----
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/alt-line-clv
+ExecStart=/usr/bin/python3 /home/YOUR_USER/alt-line-clv/alt_main.py open
+# --------------------
+StandardOutput=append:/home/YOUR_USER/alt-line-clv/open.log
+StandardError=append:/home/YOUR_USER/alt-line-clv/open.log
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
