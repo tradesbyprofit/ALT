@@ -34,6 +34,8 @@ jobs:
           echo "UTC: $(date -u)"
 
       - name: Download latest DB artifact from daily run
+        id: download-db
+        continue-on-error: true
         uses: dawidd6/action-download-artifact@v6
         with:
           workflow: alt-daily.yml
@@ -45,22 +47,37 @@ jobs:
           name_is_regexp: true
           name: "alt-daily-.*"
 
+      - name: Download stable DB artifact (fallback)
+        if: steps.download-db.outcome != 'success'
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: alt-daily.yml
+          workflow_conclusion: completed
+          last: true
+          if_no_artifact_found: warn
+          path: ./artifacts
+          name: "alt-db-latest"
+
       - name: Restore DB from artifact
         run: |
           echo "Looking for DB in artifacts..."
-          find ./artifacts -type f | head -20
+          find ./artifacts -type f | head -20 || echo "no artifacts dir"
           mkdir -p data
           # Try to find the .db file
-          DB=$(find ./artifacts -name "*.db" | head -1)
+          DB=$(find ./artifacts -name "*.db" 2>/dev/null | head -1)
           if [ -n "$DB" ]; then
             echo "Found DB: $DB"
             cp "$DB" data/alternate_model.db
             ls -lh data/
           else
-            echo "No DB artifact found — will check cache or create empty"
-            # Try cache fallback — if no artifact, we still try to run open to have games table
-            # But signals will be missing
+            echo "No DB artifact found — creating fresh DB and trying to recover signals from any previous run"
+            python -c "import alt_main as am; am.init_db(); print('init db done')"
+            # If we have no signals, report will show pending — that's okay, we'll still send a ping so you know job ran
           fi
+          # Ensure DB exists
+          ls -lh data/ || echo "data dir empty"
+          python -c "import alt_main as am, sqlite3; conn=am.get_conn(); print('games:', conn.execute('SELECT COUNT(*) FROM games').fetchone()[0]); conn.close()" || echo "db check failed"
 
       - name: Run daily report + compare (grades vs ESPN, alt vs main)
         id: report
