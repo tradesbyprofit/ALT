@@ -1,0 +1,219 @@
+name: ALT Method Report — 11 PM CT Daily Grader
+
+on:
+  schedule:
+    # 11 PM CT Dallas = 04:00 UTC next day in CDT (summer, UTC-5), 05:00 UTC in CST (winter, UTC-6)
+    - cron: '0 4 * * *'   # 11 PM CDT
+    - cron: '0 5 * * *'   # 11 PM CST + extra 1 AM CT backup
+    - cron: '0 7 * * *'   # 1 AM CT backup — ensures late games (21:15 start) are final
+    - cron: '0 10 * * *'  # 4 AM CT final backup — all games definitely final
+  workflow_dispatch:
+    inputs:
+      slate_date:
+        description: 'Slate date YYYY-MM-DD (default: today Dallas CT at run time, or yesterday if run at 04:00 UTC)'
+        required: false
+        default: ''
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          pip install requests
+          echo "Dallas: $(TZ='America/Chicago' date)"
+          echo "UTC: $(date -u)"
+
+      - name: Download latest DB artifact from daily run
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: alt-daily.yml
+          workflow_conclusion: completed
+          last: true
+          if_no_artifact_found: warn
+          path: ./artifacts
+          # artifact name contains alt-daily, match partially
+          name_is_regexp: true
+          name: "alt-daily-.*"
+
+      - name: Restore DB from artifact
+        run: |
+          echo "Looking for DB in artifacts..."
+          find ./artifacts -type f | head -20
+          mkdir -p data
+          # Try to find the .db file
+          DB=$(find ./artifacts -name "*.db" | head -1)
+          if [ -n "$DB" ]; then
+            echo "Found DB: $DB"
+            cp "$DB" data/alternate_model.db
+            ls -lh data/
+          else
+            echo "No DB artifact found — will check cache or create empty"
+            # Try cache fallback — if no artifact, we still try to run open to have games table
+            # But signals will be missing
+          fi
+
+      - name: Run daily report + compare (grades vs ESPN, alt vs main)
+        id: report
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          # Slate date logic:
+          # At 04:00 UTC = 23:00 CT previous day, so Dallas date is still previous day
+          # Using America/Chicago date gives correct slate for 11 PM report
+          SLATE_DALLAS=$(TZ='America/Chicago' date +%Y-%m-%d)
+          if [ -n "${{ inputs.slate_date }}" ]; then
+            SLATE=$SLATE_DALLAS
+            # Actually if user provides input, use it
+            SLATE="${{ inputs.slate_date }}"
+          else
+            SLATE=$SLATE_DALLAS
+          fi
+          # For 04:00 UTC run, Dallas is 23:00 previous day, so date is previous day — that's what we want to grade
+          # For 10:00 UTC run (4 AM CT), Dallas is 4 AM, date is current day, but we want yesterday's slate (games that started yesterday)
+          # So if hour Dallas < 12 (morning), use yesterday Dallas date
+          HOUR_DALLAS=$(TZ='America/Chicago' date +%H)
+          if [ "$HOUR_DALLAS" -lt 12 ]; then
+            SLATE=$(TZ='America/Chicago' date -d 'yesterday' +%Y-%m-%d)
+            if [ -n "${{ inputs.slate_date }}" ]; then
+              SLATE="${{ inputs.slate_date }}"
+            fi
+          fi
+          echo "SLATE=$SLATE" >> $GITHUB_ENV
+          echo "Reporting slate $SLATE"
+          echo "Dallas now: $(TZ='America/Chicago' date)"
+          
+          # Ensure DB exists
+          python -c "import alt_main as am; am.init_db()"
+          
+          # Run report
+          echo "=== REPORT ==="
+          python alt_main.py report $SLATE 2>&1 | tee report.txt
+          echo ""
+          echo "=== COMPARE ==="
+          python alt_main.py compare $SLATE 2>&1 | tee compare.txt
+          
+          # Combine for artifact
+          cat report.txt compare.txt > full_report.txt
+          echo "FULL_REPORT<<EOF" >> $GITHUB_ENV
+          cat full_report.txt >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alt-report-${{ env.SLATE }}-${{ github.run_number }}
+          path: |
+            report.txt
+            compare.txt
+            full_report.txt
+            data/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Send Telegram daily report summary
+        if: always()
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          SLATE: ${{ env.SLATE }}
+        run: |
+          python - << 'PY'
+          import os, sqlite3, alt_main as am
+          from zoneinfo import ZoneInfo
+          from datetime import datetime
+          TZ=ZoneInfo("America/Chicago")
+          slate=os.environ.get("SLATE") or ""
+          if not slate:
+              slate=datetime.now(TZ).strftime("%Y-%m-%d")
+              # if morning, yesterday
+              if datetime.now(TZ).hour < 12:
+                  from datetime import timedelta
+                  slate=(datetime.now(TZ)-timedelta(days=1)).strftime("%Y-%m-%d")
+          
+          try:
+              conn=am.get_conn()
+              # sharpest record
+              rows=conn.execute("""
+                SELECT s.result, s.rank_in_market, s.market_type, COUNT(*) c 
+                FROM signals s JOIN games g ON g.id=s.game_id 
+                WHERE g.slate_date=? AND s.result IN ('WIN','LOSS','PUSH')
+                GROUP BY s.result, s.rank_in_market
+              """, (slate,)).fetchall()
+              # alt vs main
+              alt_rows=conn.execute("""
+                SELECT result, COUNT(*) FROM signals s JOIN games g ON g.id=s.game_id
+                WHERE g.slate_date=? AND s.rank_in_market=1 AND s.result IN ('WIN','LOSS','PUSH')
+                GROUP BY result
+              """, (slate,)).fetchall()
+              main_rows=conn.execute("""
+                SELECT result, COUNT(*) FROM signals s JOIN games g ON g.id=s.game_id
+                WHERE g.slate_date=? AND s.is_main=1 AND s.result IN ('WIN','LOSS','PUSH')
+                GROUP BY result
+              """, (slate,)).fetchall()
+              conn.close()
+              
+              def tally_str(rows):
+                  w=sum(r[1] if len(r)>1 else 0 for r in rows if r[0]=='WIN')
+                  l=sum(r[1] if len(r)>1 else 0 for r in rows if r[0]=='LOSS')
+                  p=sum(r[1] if len(r)>1 else 0 for r in rows if r[0]=='PUSH')
+                  base=f"{w}-{l}"
+                  if p: base+=f" ({p} push)"
+                  return base, w, l, p
+              
+              # alt_rows is result,count
+              alt_map={}
+              for r in alt_rows:
+                  alt_map[r[0]]=r[1]
+              main_map={}
+              for r in main_rows:
+                  main_map[r[0]]=r[1]
+              
+              alt_w=alt_map.get('WIN',0); alt_l=alt_map.get('LOSS',0); alt_p=alt_map.get('PUSH',0)
+              main_w=main_map.get('WIN',0); main_l=main_map.get('LOSS',0); main_p=main_map.get('PUSH',0)
+              
+              if alt_w==0 and alt_l==0:
+                  msg=(f"📊 <b>ALT Method Daily Report</b> · {slate}\n"
+                       f"No graded sharpest signals yet — games may still be in progress or DB artifact missing.\n"
+                       f"Check Actions artifacts for DB.\n"
+                       f"⏱ {datetime.now(TZ).strftime('%H:%M %Z')}")
+              else:
+                  alt_rec=f"{alt_w}-{alt_l}" + (f" ({alt_p} push)" if alt_p else "")
+                  main_rec=f"{main_w}-{main_l}" + (f" ({main_p} push)" if main_p else "")
+                  edge=(alt_w-alt_l)-(main_w-main_l)
+                  edge_txt=f"+{edge}" if edge>0 else str(edge)
+                  if edge>0:
+                      edge_line=f"Alt-edge: {edge_txt} — alternates outperforming 🔥"
+                  elif edge<0:
+                      edge_line=f"Alt-edge: {edge_txt} — main line outperforming"
+                  else:
+                      edge_line="Alt-edge: even"
+                  
+                  msg=(f"📊 <b>ALT Method Daily Report</b> · {slate}\n"
+                       f"<b>Sharpest (rank 1):</b> {alt_rec}\n"
+                       f"<b>Main line:</b> {main_rec}\n"
+                       f"{edge_line}\n\n"
+                       f"Full: Actions → alt-report artifact\n"
+                       f"⏱ {datetime.now(TZ).strftime('%H:%M %Z')}")
+              
+              print(msg)
+              am.send_telegram(msg)
+          except Exception as e:
+              print(f"Report telegram failed: {e}")
+              # fallback ping so you know job ran
+              try:
+                  am.send_telegram(f"📊 <b>ALT Method Report</b> · {slate}\nReport job ran but grading had issue: {e}\nCheck Actions logs.")
+              except Exception as e2:
+                  print(f"Fallback also failed: {e2}")
+          PY

@@ -55,7 +55,7 @@ jobs:
           echo "Telegram labeled ALT Method, sharpest-only"
           python alt_daily.py ${{ inputs.slate_date }}
 
-      - name: Upload DB and logs
+      - name: Upload DB and logs (timestamped for history)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -68,7 +68,18 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-      - name: Report grading (if games finished)
+      - name: Upload stable DB artifact (for 11 PM report job)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alt-db-latest
+          path: |
+            data/
+          retention-days: 2
+          if-no-files-found: ignore
+          overwrite: true
+
+      - name: Report grading (early, games may still be in progress)
         if: always()
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
@@ -76,6 +87,7 @@ jobs:
         run: |
           SLATE=$(TZ='America/Chicago' date +%Y-%m-%d)
           if [ -n "${{ inputs.slate_date }}" ]; then SLATE="${{ inputs.slate_date }}"; fi
-          echo "Grading slate $SLATE"
+          echo "Early grading for slate $SLATE (games may still be live)"
           python alt_main.py report $SLATE || true
           python alt_main.py compare $SLATE || true
+          echo "Full 11 PM CT report will run separately via alt-report workflow"
