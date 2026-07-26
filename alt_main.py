@@ -329,7 +329,7 @@ class ParsedLine:
 
 def _parse_key(market: dict) -> tuple[str | None, float | None]:
     """
-    Parse a market key like 's;0;s;-1.5' (spread) or 's;0;ou;8.5' (total).
+    Parse a market key like 's;0;s;-1.5' (spread) or 's;0;ou;8.5' (total) or 's;0;m' (moneyline).
     Returns (market_type, line_value).
     """
     key = market.get("key") or ""
@@ -342,7 +342,9 @@ def _parse_key(market: dict) -> tuple[str | None, float | None]:
             mtype = "spread"
         elif token == "ou":
             mtype = "total"
-    # line value from key if present
+        elif token == "m":
+            mtype = "moneyline"
+    # line value from key if present (not for moneyline)
     if len(parts) >= 4:
         try:
             line = float(parts[3])
@@ -354,11 +356,12 @@ def _parse_key(market: dict) -> tuple[str | None, float | None]:
 def parse_markets(markets: list[dict]) -> tuple[list[ParsedLine], dict]:
     """
     Parse the markets endpoint response into ParsedLine objects.
-    Only period 0 (full game) spread and total markets are kept.
-    Also returns the detected main lines: {'spread': float, 'total': float}.
+    Period 0 (full game) spread, total AND moneyline markets are kept.
+    Also returns the detected main lines: {'spread': float, 'total': float, 'moneyline': 0.0}.
+    Moneyline has line_value 0.0 (no handicap).
     """
     parsed: list[ParsedLine] = []
-    main_lines: dict[str, float | None] = {"spread": None, "total": None}
+    main_lines: dict[str, float | None] = {"spread": None, "total": None, "moneyline": None}
 
     for m in markets:
         # period filter: full game only
@@ -379,10 +382,17 @@ def parse_markets(markets: list[dict]) -> tuple[list[ParsedLine], dict]:
                 mtype = "spread"
             elif t in ("total", "over_under", "overunder"):
                 mtype = "total"
-        if mtype not in ("spread", "total"):
+            elif t in ("moneyline", "money_line", "ml"):
+                mtype = "moneyline"
+        if mtype not in ("spread", "total", "moneyline"):
             continue
 
-        is_alt = bool(m.get("isAlternate", False))
+        # isAlternate can be True/False/None — None on moneylines = main
+        is_alt_raw = m.get("isAlternate", False)
+        if is_alt_raw is None:
+            is_alt = False  # moneyline main
+        else:
+            is_alt = bool(is_alt_raw)
 
         # gather prices
         prices = m.get("prices") or []
@@ -412,6 +422,10 @@ def parse_markets(markets: list[dict]) -> tuple[list[ParsedLine], dict]:
             elif desig in ("under", "u"):
                 price_map["under"] = price
 
+        # moneyline has no line value — use 0.0
+        if mtype == "moneyline":
+            if line is None:
+                line = 0.0
         if line is None:
             continue
 
@@ -429,7 +443,7 @@ def parse_markets(markets: list[dict]) -> tuple[list[ParsedLine], dict]:
             ))
             if not is_alt:
                 main_lines["spread"] = round(line, 3)
-        else:  # total
+        elif mtype == "total":
             if "over" not in price_map or "under" not in price_map:
                 continue
             parsed.append(ParsedLine(
@@ -443,6 +457,20 @@ def parse_markets(markets: list[dict]) -> tuple[list[ParsedLine], dict]:
             ))
             if not is_alt:
                 main_lines["total"] = round(line, 3)
+        else:  # moneyline
+            if "home" not in price_map or "away" not in price_map:
+                continue
+            parsed.append(ParsedLine(
+                market_type="moneyline",
+                line_value=0.0,
+                is_main=not is_alt,
+                side_a="home",
+                side_b="away",
+                price_a=price_map["home"],
+                price_b=price_map["away"],
+            ))
+            if not is_alt:
+                main_lines["moneyline"] = 0.0
 
     return parsed, main_lines
 
@@ -624,10 +652,11 @@ def cmd_open(argv: list[str]) -> int:
             total_games += 1
             spreads = sum(1 for p in parsed if p.market_type == "spread")
             totals = sum(1 for p in parsed if p.market_type == "total")
+            ml = sum(1 for p in parsed if p.market_type == "moneyline")
             print(f"  ✅ {league.upper():4} {mu['away']} @ {mu['home']} "
-                  f"[{start_local.strftime('%H:%M')}] — {spreads} spreads, "
+                  f"[{start_local.strftime('%H:%M')}] — {ml} ML, {spreads} spreads, "
                   f"{totals} totals "
-                  f"(main {main_lines.get('spread')} / {main_lines.get('total')})")
+                  f"(main {main_lines.get('spread')} / {main_lines.get('total')} / ML {main_lines.get('moneyline') is not None})")
 
             time.sleep(CONFIG["http"]["delay_between_games"])
 
@@ -827,8 +856,9 @@ class LineAnalysis:
 
 def analyze_game(conn: sqlite3.Connection, game_id: int) -> dict:
     """
-    Analyze all lines for a game. Returns dict with ranked spreads/totals.
+    Analyze all lines for a game. Returns dict with ranked spreads/totals/moneylines.
     Applies THE KEY RULE: margin must drop (by >= epsilon) or the line is killed.
+    Whole market reading: ML + alt spreads + alt totals tell the story.
     """
     a_cfg = CONFIG["analysis"]
     r_cfg = CONFIG["ranking"]
@@ -925,11 +955,11 @@ def analyze_game(conn: sqlite3.Connection, game_id: int) -> dict:
         ))
 
     # --- normalize & score per market type ---
-    result = {"spreads": [], "totals": [], "main_spread": main_spread_open,
-              "main_total": main_total_open, "close_main_spread": main_spread_close,
-              "close_main_total": main_total_close}
+    result = {"spreads": [], "totals": [], "moneylines": [],
+              "main_spread": main_spread_open, "main_total": main_total_open,
+              "close_main_spread": main_spread_close, "close_main_total": main_total_close}
 
-    for mtype, bucket in (("spread", "spreads"), ("total", "totals")):
+    for mtype, bucket in (("spread", "spreads"), ("total", "totals"), ("moneyline", "moneylines")):
         group = [a for a in analyses if a.market_type == mtype]
         alive_group = [a for a in group if a.alive]
         if alive_group:
@@ -959,12 +989,21 @@ def _promotion_bonus(market_type: str, line_value: float,
     """
     1.0 if this alternate was PROMOTED to main line at close.
     Partial credit (0..0.5) for moving closer to the main line.
+    Moneyline has no promotion (only one line).
     """
+    if market_type == "moneyline":
+        return 0.0
+
     if not is_main_open and is_main_close:
         return 1.0  # alternate became the main line — very strong
 
-    main_open = main_spread_open if market_type == "spread" else main_total_open
-    main_close = main_spread_close if market_type == "spread" else main_total_close
+    if market_type == "spread":
+        main_open = main_spread_open
+        main_close = main_spread_close
+    else:
+        main_open = main_total_open
+        main_close = main_total_close
+
     if main_open is None or main_close is None:
         return 0.0
     if is_main_open:
@@ -991,6 +1030,7 @@ def _print_ranking(conn: sqlite3.Connection, game: sqlite3.Row, analysis: dict):
           f"· game #{game['id']}")
 
     for label, bucket, main_key in (
+        ("MONEYLINE", "moneylines", None),
         ("SPREADS", "spreads", "main_spread"),
         ("TOTALS", "totals", "main_total"),
     ):
@@ -999,7 +1039,7 @@ def _print_ranking(conn: sqlite3.Connection, game: sqlite3.Row, analysis: dict):
         if not group:
             print("      (no lines captured)")
             continue
-        main_line = analysis[main_key]
+        main_line = analysis.get(main_key) if main_key else None
         printed_alive = False
         for a in group:
             tag = ""
@@ -1182,6 +1222,20 @@ def _grade_signal(sig, home: str, away: str,
             if combined > line:
                 return "LOSS"
             return "PUSH"
+    elif mtype == "moneyline":
+        # ML: home wins if home_score > away_score
+        if side == "home":
+            if home_score > away_score:
+                return "WIN"
+            if home_score < away_score:
+                return "LOSS"
+            return "PUSH"
+        else:  # away
+            if away_score > home_score:
+                return "WIN"
+            if away_score < home_score:
+                return "LOSS"
+            return "PUSH"
     else:  # spread
         # the signal side is the side that got bet. The line_value is the
         # handicap applied to the HOME team (Pinnacle convention: negative =
@@ -1209,10 +1263,10 @@ def _grade_signal(sig, home: str, away: str,
 
 def build_and_store_signals(conn: sqlite3.Connection, game_id: int,
                             analysis: dict) -> None:
-    """Store the ranked live signals for a game (replaces prior signals)."""
+    """Store the ranked live signals for a game (replaces prior signals). Whole market: ML + spreads + totals."""
     conn.execute("DELETE FROM signals WHERE game_id = ?;", (game_id,))
     units = CONFIG["testing"]["flat_units"]
-    for bucket in ("spreads", "totals"):
+    for bucket in ("moneylines", "spreads", "totals"):
         for a in analysis[bucket]:
             if not a.alive:
                 continue
@@ -1270,20 +1324,27 @@ def send_telegram(text: str) -> bool:
 
 def format_alt_alert(game: sqlite3.Row, analysis: dict) -> str | None:
     """
-    Build the clean ALT Method alert (picks only): the sharpest live alternate
-    spread and total for a game. Returns None if no picks passed.
+    Build the clean ALT Method alert (picks only): the sharpest live
+    moneyline + alternate spread + total for a game. Whole market story.
+    Returns None if no picks passed.
     """
     rows: list[str] = []
     found = False
-    for _label, bucket in (("SPREAD", "spreads"), ("TOTAL", "totals")):
-        live = [a for a in analysis[bucket] if a.alive]
+    # Whole market: ML, SPREAD, TOTAL — read the market story
+    for _label, bucket in (("ML", "moneylines"), ("SPREAD", "spreads"), ("TOTAL", "totals")):
+        live = [a for a in analysis.get(bucket, []) if a.alive]
         if not live:
             continue
         a = live[0]  # rank 1 = sharpest
         found = True
         side = a.signal_side.upper()
-        rows.append(f"<b>{_label} sharpest: {side} {a.line_value} "
-                    f"({fmt_american(a.signal_price_close)})</b>")
+        if a.market_type == "moneyline":
+            # ML has no line value
+            rows.append(f"<b>{_label} sharpest: {side} "
+                        f"({fmt_american(a.signal_price_close)})</b>")
+        else:
+            rows.append(f"<b>{_label} sharpest: {side} {a.line_value} "
+                        f"({fmt_american(a.signal_price_close)})</b>")
         rows.append(f"  moved {fmt_american(a.signal_price_open)} → "
                     f"{fmt_american(a.signal_price_close)} ({a.odds_move:.0f}¢ sharper)")
         rows.append(f"  margin {a.margin_open:.1f}% → {a.margin_close:.1f}% "
@@ -1300,6 +1361,7 @@ def format_alt_alert(game: sqlite3.Row, analysis: dict) -> str | None:
         f"🎯 <b>ALT Method</b> · {game['league'].upper()}",
         f"<b>{away} v {home}</b>",
         f"⏱ closing snapshot · {st} CT",
+        f"Whole market: ML + alts (Pinnacle sharp)",
         "",
     ]
     return "\n".join(header + rows).rstrip()
