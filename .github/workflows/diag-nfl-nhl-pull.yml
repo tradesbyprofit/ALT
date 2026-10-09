@@ -6,6 +6,7 @@ on:
       - "arena/**"
     paths:
       - "dump_nfl_nhl_lines.py"
+      - "diag_find_league_ids.py"
       - ".github/workflows/diag-nfl-nhl-pull.yml"
   workflow_dispatch:
     inputs:
@@ -29,6 +30,9 @@ jobs:
 
       - name: Install deps
         run: pip install requests
+
+      - name: Find correct league IDs
+        run: python diag_find_league_ids.py
 
       - name: Pull NFL/NHL alternate lines
         run: |
