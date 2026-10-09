@@ -7,6 +7,7 @@ on:
     paths:
       - "dump_nfl_nhl_lines.py"
       - "diag_find_league_ids.py"
+      - "diag_find_limits.py"
       - "alt_main.py"
       - ".github/workflows/diag-nfl-nhl-pull.yml"
   workflow_dispatch:
@@ -34,6 +35,9 @@ jobs:
 
       - name: Find correct league IDs
         run: python diag_find_league_ids.py
+
+      - name: Find bet limit fields in raw market JSON
+        run: python diag_find_limits.py
 
       - name: Pull NFL/NHL alternate lines
         run: |
