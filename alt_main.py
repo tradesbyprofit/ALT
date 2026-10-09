@@ -235,6 +235,8 @@ CREATE TABLE IF NOT EXISTS lines (
     close_b         REAL,
     margin_open     REAL,
     margin_close    REAL,
+    limit_open      REAL,        -- Pinnacle maxRiskStake at opening pull
+    limit_close     REAL,        -- Pinnacle maxRiskStake at closing (T-5) pull
     UNIQUE(game_id, market_type, line_value)
 );
 
@@ -332,6 +334,7 @@ class ParsedLine:
     side_b: str               # away | under
     price_a: float
     price_b: float
+    max_limit: float | None = None   # Pinnacle maxRiskStake for this line, if present
 
 
 def _parse_key(market: dict) -> tuple[str | None, float | None]:
@@ -401,6 +404,26 @@ def parse_markets(markets: list[dict]) -> tuple[list[ParsedLine], dict]:
         else:
             is_alt = bool(is_alt_raw)
 
+        # bet limit (max stake Pinnacle accepts on this specific line) — the
+        # size of the limit itself is a sharp-money signal: Pinnacle raises
+        # limits on numbers it's comfortable with and cuts them on numbers
+        # getting hammered, so limit size per alternate is valuable alongside
+        # the odds-move / margin-drop signals.
+        max_limit = None
+        for lim in (m.get("limits") or []):
+            if (lim.get("type") or "").lower() == "maxriskstake":
+                try:
+                    max_limit = float(lim.get("amount"))
+                except (ValueError, TypeError):
+                    pass
+                break
+        if max_limit is None and m.get("limits"):
+            # fall back to first limit entry if maxRiskStake isn't labeled as such
+            try:
+                max_limit = float(m["limits"][0].get("amount"))
+            except (ValueError, TypeError, IndexError):
+                pass
+
         # gather prices
         prices = m.get("prices") or []
         price_map: dict[str, float] = {}
@@ -447,6 +470,7 @@ def parse_markets(markets: list[dict]) -> tuple[list[ParsedLine], dict]:
                 side_b="away",
                 price_a=price_map["home"],
                 price_b=price_map["away"],
+                max_limit=max_limit,
             ))
             if not is_alt:
                 main_lines["spread"] = round(line, 3)
@@ -461,6 +485,7 @@ def parse_markets(markets: list[dict]) -> tuple[list[ParsedLine], dict]:
                 side_b="under",
                 price_a=price_map["over"],
                 price_b=price_map["under"],
+                max_limit=max_limit,
             ))
             if not is_alt:
                 main_lines["total"] = round(line, 3)
@@ -475,6 +500,7 @@ def parse_markets(markets: list[dict]) -> tuple[list[ParsedLine], dict]:
                 side_b="away",
                 price_a=price_map["home"],
                 price_b=price_map["away"],
+                max_limit=max_limit,
             ))
             if not is_alt:
                 main_lines["moneyline"] = 0.0
@@ -639,18 +665,19 @@ def cmd_open(argv: list[str]) -> int:
                 conn.execute("""
                     INSERT INTO lines
                         (game_id, market_type, line_value, is_main, is_main_close,
-                         side_a, side_b, open_a, open_b, margin_open)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         side_a, side_b, open_a, open_b, margin_open, limit_open)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(game_id, market_type, line_value) DO UPDATE SET
                         is_main     = excluded.is_main,
                         open_a      = excluded.open_a,
                         open_b      = excluded.open_b,
-                        margin_open = excluded.margin_open;
+                        margin_open = excluded.margin_open,
+                        limit_open  = excluded.limit_open;
                 """, (
                     game_id, pl.market_type, pl.line_value,
                     1 if pl.is_main else 0, 1 if pl.is_main else 0,
                     pl.side_a, pl.side_b, pl.price_a, pl.price_b,
-                    margin_pct(pl.price_a, pl.price_b),
+                    margin_pct(pl.price_a, pl.price_b), pl.max_limit,
                 ))
                 n_lines += 1
 
@@ -725,11 +752,11 @@ def _close_one_game(client: "PinnacleClient", conn: sqlite3.Connection,
         cur = conn.execute("""
             UPDATE lines
             SET close_a = ?, close_b = ?, is_main_close = ?,
-                margin_close = ?
+                margin_close = ?, limit_close = ?
             WHERE game_id = ? AND market_type = ? AND line_value = ?;
         """, (
             pl.price_a, pl.price_b, 1 if pl.is_main else 0,
-            margin_pct(pl.price_a, pl.price_b),
+            margin_pct(pl.price_a, pl.price_b), pl.max_limit,
             g["id"], pl.market_type, pl.line_value,
         ))
         if cur.rowcount == 0:
@@ -739,18 +766,19 @@ def _close_one_game(client: "PinnacleClient", conn: sqlite3.Connection,
                 INSERT INTO lines
                     (game_id, market_type, line_value, is_main, is_main_close,
                      side_a, side_b, open_a, open_b, close_a, close_b,
-                     margin_open, margin_close)
-                VALUES (?, ?, ?, 0, ?, ?, ?, NULL, NULL, ?, ?, NULL, ?)
+                     margin_open, margin_close, limit_close)
+                VALUES (?, ?, ?, 0, ?, ?, ?, NULL, NULL, ?, ?, NULL, ?, ?)
                 ON CONFLICT(game_id, market_type, line_value) DO UPDATE SET
                     close_a = excluded.close_a,
                     close_b = excluded.close_b,
                     is_main_close = excluded.is_main_close,
-                    margin_close = excluded.margin_close;
+                    margin_close = excluded.margin_close,
+                    limit_close = excluded.limit_close;
             """, (
                 g["id"], pl.market_type, pl.line_value,
                 1 if pl.is_main else 0,
                 pl.side_a, pl.side_b, pl.price_a, pl.price_b,
-                margin_pct(pl.price_a, pl.price_b),
+                margin_pct(pl.price_a, pl.price_b), pl.max_limit,
             ))
         n_updated += 1
 

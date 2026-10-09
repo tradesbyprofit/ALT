@@ -32,37 +32,41 @@ def render_game_md(league, mu, parsed, main_lines, idx):
 
     if mls:
         lines_out.append("**Moneyline**\n")
-        lines_out.append("| home | away |")
-        lines_out.append("|---:|---:|")
+        lines_out.append("| home | away | max limit |")
+        lines_out.append("|---:|---:|---:|")
         for p in mls:
-            lines_out.append(f"| {p.price_a:+.0f} | {p.price_b:+.0f} |")
+            lim = f"${p.max_limit:,.0f}" if p.max_limit is not None else "—"
+            lines_out.append(f"| {p.price_a:+.0f} | {p.price_b:+.0f} | {lim} |")
         lines_out.append("")
 
     if spreads:
         lines_out.append("**Spreads** (line = home handicap)\n")
-        lines_out.append("| line | home | away | margin | |")
-        lines_out.append("|---:|---:|---:|---:|:--:|")
+        lines_out.append("| line | home | away | margin | max limit | |")
+        lines_out.append("|---:|---:|---:|---:|---:|:--:|")
         for p in spreads:
             star = "★" if p.is_main else ""
             margin = am.margin_pct(p.price_a, p.price_b)
+            lim = f"${p.max_limit:,.0f}" if p.max_limit is not None else "—"
             lines_out.append(
-                f"| {p.line_value:+g} | {p.price_a:+.0f} | {p.price_b:+.0f} | {margin:.2f}% | {star} |"
+                f"| {p.line_value:+g} | {p.price_a:+.0f} | {p.price_b:+.0f} | {margin:.2f}% | {lim} | {star} |"
             )
         lines_out.append("")
 
     if totals:
         lines_out.append("**Totals**\n")
-        lines_out.append("| line | over | under | margin | |")
-        lines_out.append("|---:|---:|---:|---:|:--:|")
+        lines_out.append("| line | over | under | margin | max limit | |")
+        lines_out.append("|---:|---:|---:|---:|---:|:--:|")
         for p in totals:
             star = "★" if p.is_main else ""
             margin = am.margin_pct(p.price_a, p.price_b)
+            lim = f"${p.max_limit:,.0f}" if p.max_limit is not None else "—"
             lines_out.append(
-                f"| {p.line_value:g} | {p.price_a:+.0f} | {p.price_b:+.0f} | {margin:.2f}% | {star} |"
+                f"| {p.line_value:g} | {p.price_a:+.0f} | {p.price_b:+.0f} | {margin:.2f}% | {lim} | {star} |"
             )
         lines_out.append("")
 
     return "\n".join(lines_out)
+
 
 
 def main():
