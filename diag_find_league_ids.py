@@ -5,7 +5,7 @@ real games exist tonight (10/9/2026) but the hardcoded league_ids (NFL=676,
 NHL=579) are returning 0 matchups."""
 import alt_main as am
 
-for label, sport_id in [("American Football (NFL lives here)", 6), ("Ice Hockey (NHL lives here)", 5)]:
+for label, sport_id in [("Football (NFL lives here)", 15), ("Hockey (NHL lives here)", 19)]:
     print(f"\n=== sport_id={sport_id} — {label} ===", flush=True)
     try:
         resp = am.PinnacleClient().session.get(
