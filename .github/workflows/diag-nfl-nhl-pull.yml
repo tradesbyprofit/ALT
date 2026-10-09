@@ -1,0 +1,38 @@
+name: DIAG — Pull NFL/NHL Alt Lines
+
+on:
+  push:
+    branches:
+      - "arena/**"
+    paths:
+      - "dump_nfl_nhl_lines.py"
+      - ".github/workflows/diag-nfl-nhl-pull.yml"
+  workflow_dispatch:
+    inputs:
+      slate_date:
+        description: 'Slate date YYYY-MM-DD'
+        required: false
+        default: ''
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Pull NFL/NHL alternate lines
+        run: |
+          SLATE="${{ inputs.slate_date }}"
+          if [ -z "$SLATE" ]; then SLATE=$(TZ='America/Chicago' date +%Y-%m-%d); fi
+          echo "Pulling slate: $SLATE"
+          python dump_nfl_nhl_lines.py "$SLATE"

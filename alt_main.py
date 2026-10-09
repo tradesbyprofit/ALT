@@ -286,7 +286,14 @@ class PinnacleClient:
             "X-API-Key": cfg["api_key"],
             "Content-Language": "en-US",
             "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0 (compatible; AltLineCLV/1.0)",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.pinnacle.com/",
+            "Origin": "https://www.pinnacle.com",
+            "Sec-Fetch-Site": "same-site",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
         })
         self.timeout = CONFIG["http"]["timeout"]
 
