@@ -77,8 +77,34 @@ def main():
         try:
             raw = client.get_matchups(league_id)
         except Exception as e:
-            print(f"  ⚠️  {league}: matchups fetch FAILED: {e}", flush=True)
-            continue
+            print(f"  ⚠️  {league}: league-level matchups fetch FAILED: {e}", flush=True)
+            sport_id = am.CONFIG["sport_ids"][league]
+            try:
+                print(f"  ...trying sport-level fallback /sports/{sport_id}/matchups", flush=True)
+                resp = client.session.get(
+                    f"{client.base}/{client.version}/sports/{sport_id}/matchups",
+                    timeout=client.timeout,
+                )
+                print(f"  sport-level status: {resp.status_code}", flush=True)
+                if resp.status_code == 200:
+                    raw_all = resp.json()
+                    # sport-level feed includes every league in that sport (e.g.
+                    # NCAAF + NFL under american football) - filter to our league_id
+                    raw = [
+                        m for m in raw_all
+                        if (m.get("league") or {}).get("id") == league_id
+                    ]
+                    print(
+                        f"  ✅ sport-level fallback worked, {len(raw_all)} total matchups "
+                        f"in sport, {len(raw)} match league_id={league_id}",
+                        flush=True,
+                    )
+                else:
+                    print(f"  body: {resp.text[:300]}", flush=True)
+                    continue
+            except Exception as e2:
+                print(f"  sport-level fallback also FAILED: {e2}", flush=True)
+                continue
 
         matchups = am.parse_matchups(raw)
         print(f"  total matchups returned by Pinnacle: {len(matchups)}", flush=True)
